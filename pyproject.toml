@@ -55,9 +55,6 @@ Repository = "https://github.com/negaga53/agentic-tmux"
 [tool.hatch.build.targets.wheel]
 packages = ["agentic"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"agentic/data" = "agentic/data"
-
 [tool.black]
 line-length = 100
 target-version = ["py311"]

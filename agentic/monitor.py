@@ -263,10 +263,12 @@ def _compute_visible_lines(panel: str, expanded: bool = False) -> int:
     Layout: header(4) + top(10) + bottom(remaining).
     Bottom is split_row (horizontal), so both activity and messages panels
     share the full bottom height — the ratio only affects WIDTH, not height.
+    
+    Reserves space for: panel border (2 lines) + scroll indicator (1 line).
     """
     term_height = shutil.get_terminal_size().lines
     bottom_height = term_height - 14  # header(4) + top(10)
-    usable = bottom_height - 2  # subtract panel border lines
+    usable = bottom_height - 3  # panel border (2) + scroll indicator (1)
     if expanded:
         usable = max(usable, term_height - 6)  # almost full screen
     return max(4, usable)

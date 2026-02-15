@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import time
 from pathlib import Path
 from typing import Any
@@ -134,27 +135,6 @@ def _detect_tmux_session() -> str | None:
     return None
 
 
-def _ensure_admin_pane(tmux: TmuxManager, working_dir: str) -> None:
-    """Ensure the admin window exists and has the monitor running.
-    
-    If the admin window was closed or the monitor exited, recreate it.
-    """
-    try:
-        admin_exists = False
-        for window in tmux.session.windows:
-            if window.name == "admin":
-                # Check if the monitor process is running in the pane
-                pane = window.active_pane
-                if pane and pane.current_command and "monitor" in (pane.current_command or ""):
-                    admin_exists = True
-                break
-        
-        if not admin_exists:
-            tmux.create_admin_pane(working_dir)
-    except Exception:
-        pass  # Best-effort — don't block session start
-
-
 def _start_session_internal(
     working_dir: str,
     cli_command: str = "copilot -i",
@@ -170,35 +150,17 @@ def _start_session_internal(
     
     storage = get_redis_client(working_dir)
     
-    # Check for existing session
+    # Always start fresh — destroy any previous session
     existing_id = get_current_session_id(working_dir)
     if existing_id:
-        session = storage.get_session(existing_id)
-        if session and session.status not in (SessionStatus.COMPLETED, SessionStatus.FAILED):
-            # Verify the orchestrator process is still alive
-            pid_file = get_pid_file(working_dir)
-            orchestrator_alive = False
-            if pid_file.exists():
-                try:
-                    pid = int(pid_file.read_text().strip())
-                    os.kill(pid, 0)  # signal 0 = existence check
-                    orchestrator_alive = True
-                except (ProcessLookupError, ValueError, PermissionError, OSError):
-                    pass
-            
-            if orchestrator_alive:
-                # Session is genuinely running — ensure admin pane exists
-                tmux_session_name = session.config.get("tmux_session", "agentic")
-                tmux = TmuxManager(session_name=tmux_session_name, use_current_session=False)
-                _ensure_admin_pane(tmux, session.working_directory)
-                
-                return {
-                    "session_id": existing_id,
-                    "status": "existing",
-                    "working_directory": session.working_directory,
-                }
-            
-            # Orchestrator is dead → session is stale, fall through to cleanup
+        # Kill old orchestrator process if still running
+        pid_file = get_pid_file(working_dir)
+        if pid_file.exists():
+            try:
+                pid = int(pid_file.read_text().strip())
+                os.kill(pid, signal.SIGTERM)
+            except (ProcessLookupError, ValueError, PermissionError, OSError):
+                pass
     
     # Clean up old session data (logs, database) for a fresh start
     cleanup_result = cleanup_session_data(working_dir)
