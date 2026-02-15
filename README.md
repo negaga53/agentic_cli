@@ -4,7 +4,7 @@
 
 Spawn multiple AI coding agents that work in parallel, communicate with each other, and report back to you—all running in separate tmux panes you can watch in real-time.
 
-## Quick Start (2 minutes)
+## Quick Start
 
 ### Prerequisites
 
@@ -24,45 +24,49 @@ pip install agentic-tmux
 Or run the setup script (checks prerequisites + configures everything):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/agentic-cli/agentic-tmux/main/setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/negaga53/agentic-tmux/main/setup.sh | bash
 ```
 
 Or from source:
 
 ```bash
-git clone https://github.com/agentic-cli/agentic-tmux
+git clone https://github.com/negaga53/agentic-tmux
 cd agentic-tmux
 pip install -e .
-agentic setup  # Interactive configuration wizard
+agentic-tmux setup  # Interactive configuration wizard
 ```
 
-### Configure Your Editor
+### Configure MCP
 
-**For VS Code** (GitHub Copilot CLI), add to `.vscode/mcp.json`:
+Run `agentic-tmux setup` to configure automatically, or add manually:
 
-```json
-{
-  "servers": {
-    "agentic": {
-      "command": "agentic-mcp"
-    }
-  }
-}
-```
-
-**For Claude Desktop**, add to `~/.config/claude/claude_desktop_config.json`:
+**For Copilot CLI**, add to `~/.copilot/mcp-config.json`:
 
 ```json
 {
   "mcpServers": {
     "agentic": {
-      "command": "agentic-mcp"
+      "type": "local",
+      "tools": ["*"],
+      "command": "agentic-tmux",
+      "args": ["mcp"]
     }
   }
 }
 ```
 
-Or run `agentic setup` to configure automatically.
+**For Claude Code**, add to `~/.claude.json`:
+
+```json
+{
+  "mcpServers": {
+    "agentic": {
+      "command": "agentic-tmux",
+      "args": ["mcp"]
+    }
+  }
+}
+```
 
 ### Use It
 
@@ -71,7 +75,7 @@ Or run `agentic setup` to configure automatically.
    tmux new -s work
    ```
 
-2. **Open your project in VS Code or Claude Desktop**
+2. **Start Copilot CLI or Claude Code in your project**
 
 3. **Ask your AI assistant to use the agentic tools**:
    ```
@@ -81,7 +85,9 @@ Or run `agentic setup` to configure automatically.
 
 4. **Watch agents work** in tmux panes, or use the monitor:
    ```bash
-   agentic status --watch
+   agentic-tmux status --watch
+   OR
+   agentic-tmux monitor
    ```
 
 ---
@@ -90,7 +96,7 @@ Or run `agentic setup` to configure automatically.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│                    Your Editor (VS Code / Claude Desktop)                 │
+│               Your Terminal (Copilot CLI / Claude Code)                   │
 │           "Spawn 3 agents to refactor, test, and review..."              │
 └───────────────────────────────────┬──────────────────────────────────────┘
                                     │ MCP Protocol
@@ -104,8 +110,8 @@ Or run `agentic setup` to configure automatically.
             ▼                       ▼                       ▼
 ┌───────────────────┐   ┌───────────────────┐   ┌───────────────────┐
 │  TMUX Pane: W1    │   │  TMUX Pane: W2    │   │  TMUX Pane: W3    │
-│                   │   │                   │   │                   │
-│  copilot -i       │   │  copilot -i       │   │  copilot -i       │
+│                   │ < │                   │ < │                   │
+│  copilot -i       │ > │  copilot -i       │ > │  copilot -i       │
 │  "Refactor auth"  │   │  "Write tests"    │   │  "Review code"    │
 └─────────┬─────────┘   └─────────┬─────────┘   └─────────┬─────────┘
           │                       │                       │
@@ -116,7 +122,7 @@ Or run `agentic setup` to configure automatically.
 ```
 
 **Key Features:**
-- ✅ Agents run in visible tmux panes—watch them work in real-time
+- ✅ Agents run in visible tmux panes—watch then work in real-time
 - ✅ Agents communicate via message queues (no shared state issues)
 - ✅ Works offline with SQLite (Redis optional for persistence)
 - ✅ Auto-cleanup on new sessions
@@ -165,28 +171,28 @@ The CLI is for monitoring and debugging. Use MCP tools for orchestration.
 
 ```bash
 # Run the setup wizard
-agentic setup
+agentic-tmux setup
 
 # Check system configuration
-agentic doctor
+agentic-tmux doctor
 
-# Start MCP server (usually auto-started by your editor)
-agentic mcp
+# Start MCP server (usually auto-started by your CLI tool)
+agentic-tmux mcp
 
 # Monitor agents in real-time
-agentic status --watch
+agentic-tmux status --watch
 
 # View agent logs
-agentic logs W1 -f
+agentic-tmux logs W1 -f
 
 # Interactive monitoring dashboard
-agentic monitor
+agentic-tmux monitor
 
 # Stop current session
-agentic stop
+agentic-tmux stop
 
 # Export session data
-agentic export
+agentic-tmux export
 ```
 
 ---
@@ -204,23 +210,13 @@ Without Redis, data is stored in `.agentic/agentic.db` in your project directory
 
 ### Per-Project Configuration
 
-Add `.vscode/mcp.json` to any project for project-specific MCP setup:
-
-```json
-{
-  "servers": {
-    "agentic": {
-      "command": "agentic-mcp"
-    }
-  }
-}
-```
+For Claude Code, add `.mcp.json` to a project root. For Copilot CLI, the global `~/.copilot/mcp-config.json` applies to all projects.
 
 ---
 
 ## Troubleshooting
 
-### "agentic: command not found"
+### "agentic-tmux: command not found"
 
 Your Python scripts directory isn't in PATH:
 ```bash
@@ -232,19 +228,19 @@ export PATH="$HOME/.local/bin:$PATH"
 
 1. Make sure tmux is running: `tmux new -s work`
 2. Check you're inside tmux when running commands
-3. Run `agentic doctor` to diagnose issues
+3. Run `agentic-tmux doctor` to diagnose issues
 
 ### Agents not communicating
 
-1. Check storage is working: `agentic doctor`
+1. Check storage is working: `agentic-tmux doctor`
 2. If using Redis, make sure it's running: `redis-server`
-3. Check agent logs: `agentic logs W1`
+3. Check agent logs: `agentic-tmux logs W1`
 
 ### MCP tools not appearing
 
-1. Restart your editor after adding MCP configuration
-2. Verify config syntax with `agentic doctor`
-3. Check MCP server starts: `agentic mcp` (should show "Starting MCP server...")
+1. Restart your CLI tool after adding MCP configuration
+2. Verify config syntax with `agentic-tmux doctor`
+3. Check MCP server starts: `agentic-tmux mcp` (should show "Starting MCP server...")
 
 ### Debug Hooks (Advanced)
 
@@ -252,7 +248,7 @@ For detailed agent behavior logging with GitHub Copilot CLI:
 
 ```bash
 # Install hooks
-agentic setup --hooks
+agentic-tmux setup --hooks
 
 # After running agents, analyze logs
 ~/.github/hooks/analyze-agent-logs.sh
@@ -300,7 +296,7 @@ MIT
 
 ## Links
 
-- [GitHub Repository](https://github.com/agentic-cli/agentic-tmux)
-- [Issue Tracker](https://github.com/agentic-cli/agentic-tmux/issues)
+- [GitHub Repository](https://github.com/negaga53/agentic-tmux)
+- [Issue Tracker](https://github.com/negaga53/agentic-tmux/issues)
 - [GitHub Copilot CLI](https://githubnext.com/projects/copilot-cli/)
 - [Claude Code](https://www.anthropic.com/claude-code)

@@ -2,14 +2,11 @@
 
 This module provides a Model Context Protocol server that exposes
 agentic-tmux functionality as MCP tools, resources, and prompts.
-The server can be used by any MCP-compatible client (VS Code, Claude Desktop, etc).
+The server can be used by any MCP-compatible client (GitHub Copilot CLI, Claude Code, etc).
 
 Usage:
     # Via CLI
-    agentic mcp
-    
-    # Or directly
-    agentic-mcp
+    agentic-tmux mcp
 """
 
 from __future__ import annotations
@@ -63,6 +60,101 @@ mcp = FastMCP("Agentic TMUX")
 # =============================================================================
 
 
+def _detect_tmux_session() -> str | None:
+    """Detect the tmux session this process belongs to.
+    
+    Uses three strategies in order of reliability:
+    1. Walk the process tree to find an ancestor that's a tmux pane shell
+       (works regardless of env var inheritance)
+    2. Use TMUX_PANE env var with display-message
+    3. Use TMUX env var with display-message
+    
+    Returns session name or None if detection fails.
+    """
+    import subprocess as sp
+    
+    # Strategy 1: Walk process tree to find the tmux pane ancestor
+    try:
+        result = sp.run(
+            ["tmux", "list-panes", "-a", "-F", "#{pane_pid} #{session_name}"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            # Build map: pane shell PID → session name
+            pane_sessions: dict[str, str] = {}
+            for line in result.stdout.strip().split('\n'):
+                parts = line.split(None, 1)
+                if len(parts) >= 2:
+                    pane_sessions[parts[0]] = parts[1]
+            
+            # Walk up the process tree from current PID
+            pid = os.getpid()
+            while pid > 1:
+                if str(pid) in pane_sessions:
+                    return pane_sessions[str(pid)]
+                try:
+                    with open(f'/proc/{pid}/stat') as f:
+                        ppid = int(f.read().split()[3])
+                    if ppid == pid:
+                        break
+                    pid = ppid
+                except (FileNotFoundError, ValueError, PermissionError):
+                    break
+    except Exception:
+        pass
+    
+    # Strategy 2: Use TMUX_PANE env var
+    tmux_pane = os.environ.get("TMUX_PANE")
+    if tmux_pane:
+        try:
+            result = sp.run(
+                ["tmux", "display-message", "-t", tmux_pane, "-p", "#S"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except Exception:
+            pass
+    
+    # Strategy 3: Use TMUX env var context
+    if os.environ.get("TMUX"):
+        try:
+            result = sp.run(
+                ["tmux", "display-message", "-p", "#S"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except Exception:
+            pass
+    
+    return None
+
+
+def _ensure_admin_pane(tmux: TmuxManager, working_dir: str) -> None:
+    """Ensure the admin window exists and has the monitor running.
+    
+    If the admin window was closed or the monitor exited, recreate it.
+    """
+    try:
+        admin_exists = False
+        for window in tmux.session.windows:
+            if window.name == "admin":
+                # Check if the monitor process is running in the pane
+                pane = window.active_pane
+                if pane and pane.current_command and "monitor" in (pane.current_command or ""):
+                    admin_exists = True
+                break
+        
+        if not admin_exists:
+            tmux.create_admin_pane(working_dir)
+    except Exception:
+        pass  # Best-effort — don't block session start
+
+
 def _start_session_internal(
     working_dir: str,
     cli_command: str = "copilot -i",
@@ -83,12 +175,30 @@ def _start_session_internal(
     if existing_id:
         session = storage.get_session(existing_id)
         if session and session.status not in (SessionStatus.COMPLETED, SessionStatus.FAILED):
-            # Return existing session info
-            return {
-                "session_id": existing_id,
-                "status": "existing",
-                "working_directory": session.working_directory,
-            }
+            # Verify the orchestrator process is still alive
+            pid_file = get_pid_file(working_dir)
+            orchestrator_alive = False
+            if pid_file.exists():
+                try:
+                    pid = int(pid_file.read_text().strip())
+                    os.kill(pid, 0)  # signal 0 = existence check
+                    orchestrator_alive = True
+                except (ProcessLookupError, ValueError, PermissionError, OSError):
+                    pass
+            
+            if orchestrator_alive:
+                # Session is genuinely running — ensure admin pane exists
+                tmux_session_name = session.config.get("tmux_session", "agentic")
+                tmux = TmuxManager(session_name=tmux_session_name, use_current_session=False)
+                _ensure_admin_pane(tmux, session.working_directory)
+                
+                return {
+                    "session_id": existing_id,
+                    "status": "existing",
+                    "working_directory": session.working_directory,
+                }
+            
+            # Orchestrator is dead → session is stale, fall through to cleanup
     
     # Clean up old session data (logs, database) for a fresh start
     cleanup_result = cleanup_session_data(working_dir)
@@ -98,33 +208,7 @@ def _start_session_internal(
     
     # Detect current tmux session if not provided
     if not tmux_session:
-        import subprocess as sp
-        # First try listing attached clients - this works even from non-tmux processes
-        try:
-            result = sp.run(
-                ["tmux", "list-clients", "-F", "#{client_session}"],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                # Get the first attached client's session
-                tmux_session = result.stdout.strip().split('\n')[0]
-        except Exception:
-            pass
-        
-        # Fallback to display-message (works if we're inside tmux)
-        if not tmux_session:
-            try:
-                result = sp.run(
-                    ["tmux", "display-message", "-p", "#S"],
-                    capture_output=True,
-                    text=True,
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    tmux_session = result.stdout.strip()
-            except Exception:
-                pass
-        
+        tmux_session = _detect_tmux_session()
         if not tmux_session:
             tmux_session = "agentic"  # fallback
     

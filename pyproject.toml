@@ -44,15 +44,13 @@ dev = [
 ]
 
 [project.scripts]
-agentic = "agentic.cli:main"
-agentic-mcp = "agentic.mcp_server:main"
+agentic-tmux = "agentic.cli:main"
 agentic-worker-mcp = "agentic.worker_mcp:main"
-agentic-monitor = "agentic.monitor:main"
 
 [project.urls]
-Homepage = "https://github.com/agentic-cli/agentic-tmux"
-Documentation = "https://github.com/agentic-cli/agentic-tmux#readme"
-Repository = "https://github.com/agentic-cli/agentic-tmux"
+Homepage = "https://github.com/negaga53/agentic-tmux"
+Documentation = "https://github.com/negaga53/agentic-tmux#readme"
+Repository = "https://github.com/negaga53/agentic-tmux"
 
 [tool.hatch.build.targets.wheel]
 packages = ["agentic"]

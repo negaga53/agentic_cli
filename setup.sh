@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Agentic TMUX - Easy Setup Script
 # Supports: GitHub Copilot CLI, Claude Code
-# Usage: curl -fsSL https://raw.githubusercontent.com/agentic-cli/agentic-tmux/main/setup.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/negaga53/agentic-tmux/main/setup.sh | bash
 
 set -e
 
@@ -101,7 +101,7 @@ else
     pip3 install agentic-tmux --quiet 2>/dev/null || {
         echo "  PyPI not available, cloning from GitHub..."
         TEMP_DIR=$(mktemp -d)
-        git clone --depth 1 https://github.com/agentic-cli/agentic-tmux.git "$TEMP_DIR" 2>/dev/null
+        git clone --depth 1 https://github.com/negaga53/agentic-tmux.git "$TEMP_DIR" 2>/dev/null
         pip3 install -e "$TEMP_DIR" --quiet
     }
 fi
@@ -109,55 +109,53 @@ fi
 echo -e "  ${GREEN}✓${NC} agentic-tmux installed"
 
 # Verify installation
-if ! command -v agentic &> /dev/null; then
-    echo -e "${YELLOW}Note:${NC} 'agentic' not in PATH. You may need to:"
+if ! command -v agentic-tmux &> /dev/null; then
+    echo -e "${YELLOW}Note:${NC} 'agentic-tmux' not in PATH. You may need to:"
     echo -e "  ${CYAN}export PATH=\"\$HOME/.local/bin:\$PATH\"${NC}"
     echo -e "  Add this to your ~/.bashrc or ~/.zshrc"
 fi
 
 # Setup MCP configuration
 echo -e "\n${BLUE}Would you like to configure MCP integration?${NC}"
-echo "  1) VS Code (GitHub Copilot CLI)"
-echo "  2) Claude Desktop"
+echo "  1) Copilot CLI (~/.copilot/mcp-config.json)"
+echo "  2) Claude Code (~/.claude.json)"
 echo "  3) Both"
 echo "  4) Skip (configure manually later)"
 echo ""
 read -p "Choose [1-4]: " MCP_CHOICE
 
-setup_vscode_mcp() {
-    VSCODE_MCP_DIR="$HOME/.vscode/mcp"
-    VSCODE_MCP_FILE="$VSCODE_MCP_DIR/servers.json"
+setup_copilot_mcp() {
+    COPILOT_CONFIG_DIR="$HOME/.copilot"
+    COPILOT_CONFIG_FILE="$COPILOT_CONFIG_DIR/mcp-config.json"
     
-    mkdir -p "$VSCODE_MCP_DIR"
+    mkdir -p "$COPILOT_CONFIG_DIR"
     
-    if [ -f "$VSCODE_MCP_FILE" ]; then
-        echo "  Existing VS Code MCP config found, backing up..."
-        cp "$VSCODE_MCP_FILE" "$VSCODE_MCP_FILE.bak"
-    fi
-    
-    # Create or update the config
-    cat > "$VSCODE_MCP_FILE" << 'EOF'
+    if [ -f "$COPILOT_CONFIG_FILE" ]; then
+        echo "  Existing Copilot CLI MCP config found, backing up..."
+        cp "$COPILOT_CONFIG_FILE" "$COPILOT_CONFIG_FILE.bak"
+        echo -e "  ${YELLOW}Note:${NC} Please manually add agentic to your existing config"
+    else
+        cat > "$COPILOT_CONFIG_FILE" << 'EOF'
 {
-  "servers": {
+  "mcpServers": {
     "agentic": {
-      "command": "agentic-mcp",
-      "args": []
+      "type": "local",
+      "tools": ["*"],
+      "command": "agentic-tmux",
+      "args": ["mcp"]
     }
   }
 }
 EOF
-    echo -e "  ${GREEN}✓${NC} VS Code MCP configured at $VSCODE_MCP_FILE"
-    echo -e "  ${CYAN}Tip:${NC} Also add to each project's .vscode/mcp.json for project-specific setup"
+        echo -e "  ${GREEN}✓${NC} Copilot CLI configured at $COPILOT_CONFIG_FILE"
+    fi
 }
 
 setup_claude_mcp() {
-    CLAUDE_CONFIG_DIR="$HOME/.config/claude"
-    CLAUDE_CONFIG_FILE="$CLAUDE_CONFIG_DIR/claude_desktop_config.json"
-    
-    mkdir -p "$CLAUDE_CONFIG_DIR"
+    CLAUDE_CONFIG_FILE="$HOME/.claude.json"
     
     if [ -f "$CLAUDE_CONFIG_FILE" ]; then
-        echo "  Existing Claude Desktop config found, backing up..."
+        echo "  Existing Claude Code config found, backing up..."
         cp "$CLAUDE_CONFIG_FILE" "$CLAUDE_CONFIG_FILE.bak"
         # Try to merge (simple approach - just notify user)
         echo -e "  ${YELLOW}Note:${NC} Please manually add agentic to your existing config"
@@ -166,25 +164,25 @@ setup_claude_mcp() {
 {
   "mcpServers": {
     "agentic": {
-      "command": "agentic-mcp",
-      "args": []
+      "command": "agentic-tmux",
+      "args": ["mcp"]
     }
   }
 }
 EOF
-        echo -e "  ${GREEN}✓${NC} Claude Desktop configured at $CLAUDE_CONFIG_FILE"
+        echo -e "  ${GREEN}✓${NC} Claude Code configured at $CLAUDE_CONFIG_FILE"
     fi
 }
 
 case $MCP_CHOICE in
     1)
-        setup_vscode_mcp
+        setup_copilot_mcp
         ;;
     2)
         setup_claude_mcp
         ;;
     3)
-        setup_vscode_mcp
+        setup_copilot_mcp
         setup_claude_mcp
         ;;
     4|*)
@@ -206,7 +204,7 @@ if [[ "$INSTALL_HOOKS" =~ ^[Yy]$ ]]; then
         cp -r .github/hooks/* "$HOOKS_DIR/"
     else
         # Download from GitHub
-        HOOKS_URL="https://raw.githubusercontent.com/agentic-cli/agentic-tmux/main/.github/hooks"
+        HOOKS_URL="https://raw.githubusercontent.com/negaga53/agentic-tmux/main/.github/hooks"
         for hook in hooks.json log-session-start.sh log-session-end.sh log-prompt.sh log-pre-tool.sh log-post-tool.sh log-error.sh analyze-agent-logs.sh; do
             curl -fsSL "$HOOKS_URL/$hook" -o "$HOOKS_DIR/$hook" 2>/dev/null || true
         done
@@ -225,11 +223,11 @@ echo ""
 echo "  1. Start tmux:"
 echo -e "     ${YELLOW}tmux new -s work${NC}"
 echo ""
-echo "  2. Open your project in VS Code/Claude and use MCP tools:"
-echo -e "     ${YELLOW}plan_tasks(\"Add authentication to the app\")${NC}"
+echo "  2. Start Copilot CLI or Claude Code in your project and use MCP tools:"
+echo -e "     Ask your AI to use ${YELLOW}agentic${NC} MCP tools"
 echo ""
 echo "  3. Or use the CLI for manual control:"
-echo -e "     ${YELLOW}agentic status --watch${NC}"
+echo -e "     ${YELLOW}agentic-tmux status --watch${NC}"
 echo ""
-echo -e "${CYAN}Documentation:${NC} https://github.com/agentic-cli/agentic-tmux"
+echo -e "${CYAN}Documentation:${NC} https://github.com/negaga53/agentic-tmux"
 echo ""

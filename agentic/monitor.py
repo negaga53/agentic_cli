@@ -13,8 +13,7 @@ Features:
 - Detect when agents/orchestrator are not running
 
 Usage:
-    agentic monitor
-    agentic-monitor
+    agentic-tmux monitor
     
 Controls:
     ↑/↓ or j/k: Navigate between agents
@@ -31,6 +30,7 @@ import fcntl
 import json
 import os
 import select
+import shutil
 import sys
 import termios
 import time
@@ -184,6 +184,16 @@ class MonitorState:
     # Status message (shown briefly)
     status_message: str = ""
     status_time: float = 0.0
+    # Scroll & focus state
+    focused_panel: str = "messages"  # "messages" or "activity"
+    msg_scroll_offset: int = 0  # 0 = bottom (newest), >0 = scrolled up
+    activity_scroll_offset: int = 0
+    # Pane viewer overlay
+    pane_viewer_active: bool = False
+    pane_viewer_content: str = ""
+    pane_viewer_title: str = ""
+    # Help overlay
+    help_overlay_active: bool = False
 
 
 # =============================================================================
@@ -192,8 +202,10 @@ class MonitorState:
 
 def get_key_nonblocking() -> str | None:
     """Get a keypress without blocking. Returns None if no key pressed."""
+    fd = sys.stdin.fileno()
+    
     # Check if data available
-    rlist, _, _ = select.select([sys.stdin], [], [], 0)
+    rlist, _, _ = select.select([fd], [], [], 0)
     if not rlist:
         return None
     
@@ -201,18 +213,16 @@ def get_key_nonblocking() -> str | None:
     if not ch:
         return None
     
-    # Handle escape sequences (arrow keys)
+    # Handle escape sequences (arrow keys, PgUp/PgDn, Home/End)
     if ch == '\x1b':
-        # Try to read more - arrow keys send ESC [ A/B/C/D
         # Set non-blocking temporarily to read rest of sequence
-        fd = sys.stdin.fileno()
         old_flags = fcntl.fcntl(fd, fcntl.F_GETFL)
         fcntl.fcntl(fd, fcntl.F_SETFL, old_flags | os.O_NONBLOCK)
         
         try:
-            # Read up to 4 more chars for escape sequence
+            # Read up to 5 more chars for escape sequence
             rest = ''
-            for _ in range(4):
+            for _ in range(5):
                 try:
                     c = sys.stdin.read(1)
                     if c:
@@ -225,15 +235,17 @@ def get_key_nonblocking() -> str | None:
             buf = ch + rest
             
             # Parse escape sequences
-            if buf == '\x1b[A' or buf == '\x1bOA':
-                return 'UP'
-            elif buf == '\x1b[B' or buf == '\x1bOB':
-                return 'DOWN'
-            elif buf == '\x1b[C' or buf == '\x1bOC':
-                return 'RIGHT'
-            elif buf == '\x1b[D' or buf == '\x1bOD':
-                return 'LEFT'
-            return 'ESC'
+            seq_map = {
+                '\x1b[A': 'UP',    '\x1bOA': 'UP',
+                '\x1b[B': 'DOWN',  '\x1bOB': 'DOWN',
+                '\x1b[C': 'RIGHT', '\x1bOC': 'RIGHT',
+                '\x1b[D': 'LEFT',  '\x1bOD': 'LEFT',
+                '\x1b[5~': 'PGUP',
+                '\x1b[6~': 'PGDN',
+                '\x1b[H': 'HOME',  '\x1bOH': 'HOME',
+                '\x1b[F': 'END',   '\x1bOF': 'END',
+            }
+            return seq_map.get(buf, 'ESC')
         finally:
             fcntl.fcntl(fd, fcntl.F_SETFL, old_flags)
     
@@ -243,6 +255,44 @@ def get_key_nonblocking() -> str | None:
 # =============================================================================
 # Helper Functions
 # =============================================================================
+
+
+def _compute_visible_lines(panel: str, expanded: bool = False) -> int:
+    """Compute how many usable lines a panel has based on terminal height.
+
+    Layout: header(4) + top(10) + bottom(remaining).
+    Bottom is split_row (horizontal), so both activity and messages panels
+    share the full bottom height — the ratio only affects WIDTH, not height.
+    """
+    term_height = shutil.get_terminal_size().lines
+    bottom_height = term_height - 14  # header(4) + top(10)
+    usable = bottom_height - 2  # subtract panel border lines
+    if expanded:
+        usable = max(usable, term_height - 6)  # almost full screen
+    return max(4, usable)
+
+
+def _apply_line_scroll(
+    lines: list[Text],
+    scroll_offset: int,
+    visible_lines: int,
+) -> tuple[list[Text], int, int, int]:
+    """Apply line-based scrolling to a list of Text lines.
+
+    Args:
+        lines: All rendered lines.
+        scroll_offset: Current scroll offset (0 = newest at bottom).
+        visible_lines: How many lines fit in the panel.
+
+    Returns:
+        (visible, effective_offset, total_lines, max_offset)
+    """
+    total = len(lines)
+    max_offset = max(0, total - visible_lines)
+    effective_offset = min(scroll_offset, max_offset)
+    end_idx = total - effective_offset
+    start_idx = max(0, end_idx - visible_lines)
+    return lines[start_idx:end_idx], effective_offset, total, max_offset
 
 
 def truncate_text(text: str, max_len: int = 40) -> str:
@@ -255,6 +305,34 @@ def truncate_text(text: str, max_len: int = 40) -> str:
 def format_timestamp(ts: float) -> str:
     """Format a timestamp as HH:MM:SS."""
     return time.strftime("%H:%M:%S", time.localtime(ts))
+
+
+def _capture_pane_content(pane_id: str | None, lines: int = 200) -> str:
+    """Capture the last N lines of output from a tmux pane.
+    
+    Uses `tmux capture-pane` to read the pane's visible + scrollback buffer.
+    """
+    if not pane_id:
+        return "(no pane ID)"
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["tmux", "capture-pane", "-t", pane_id, "-p", "-S", f"-{lines}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return f"(tmux error: {result.stderr.strip()})"
+        # Strip trailing blank lines
+        content = result.stdout.rstrip("\n")
+        return content if content else "(pane is empty)"
+    except FileNotFoundError:
+        return "(tmux not found)"
+    except subprocess.TimeoutExpired:
+        return "(tmux capture timed out)"
+    except Exception as e:
+        return f"(error: {e})"
 
 
 # =============================================================================
@@ -505,7 +583,8 @@ def build_header_panel(state: MonitorState, session: Any, start_time: float) -> 
         header_text.append("█", style="white blink")
     else:
         expand_hint = "[e] Collapse" if state.expanded_view else "[e] Expand"
-        header_text.append(f"\n[↑↓] Navigate  [m] Message  [t] Terminate  [i] Interrupt  {expand_hint}  [q] Quit", style="dim italic")
+        focus_hint = f"[Tab] Switch panel"
+        header_text.append(f"\n[↑↓] Navigate  [PgUp/Dn] Scroll  [m] Message  [p] View pane  [t] Term  [i] Interrupt  {expand_hint}  [?] Help  [q] Quit", style="dim italic")
     
     return Panel(header_text, title="[bold blue]AGENTIC MONITOR[/bold blue]", border_style="blue", height=4)
 
@@ -612,13 +691,11 @@ def get_message_history(session_id: str, entity_id: str, max_entries: int = 20, 
 
 
 def build_messages_panel(storage: Any, state: MonitorState) -> Panel:
-    """Build message details panel for selected entity."""
+    """Build chat-style message details panel for selected entity."""
     agents = storage.get_all_agents(state.session_id)
-    expanded = state.expanded_view
     working_dir = state.working_dir
-    
+
     # Determine selected entity
-    selected_agent = None
     if state.selected_index == 0:
         entity_id = "orchestrator"
         entity_name = "Orchestrator"
@@ -628,144 +705,216 @@ def build_messages_panel(storage: Any, state: MonitorState) -> Panel:
         sorted_agents = sorted(agents, key=lambda a: a.id)
         agent_index = state.selected_index - 1
         if agent_index < len(sorted_agents):
-            selected_agent = sorted_agents[agent_index]
-            entity_id = selected_agent.id
+            agent = sorted_agents[agent_index]
+            entity_id = agent.id
             entity_name = f"Agent {entity_id}"
-            entity_role = selected_agent.role
-            entity_status = selected_agent.status.value
+            entity_role = agent.role
+            entity_status = agent.status.value
         else:
             entity_id = "orchestrator"
             entity_name = "Orchestrator"
             entity_role = "Session coordinator"
             entity_status = "-"
-    
-    # Get pending messages in queue
-    messages = storage.peek_agent_messages(state.session_id, entity_id, count=5)
+
+    # Pending queue count
     msg_count = storage.get_message_count(state.session_id, entity_id)
-    
-    # Get message history from activity log
-    history = get_message_history(state.session_id, entity_id, max_entries=10 if not expanded else 20, working_dir=working_dir)
-    
-    content = Text()
-    content.append(f"{entity_name}", style="cyan bold")
-    content.append(f" [{entity_status}]", style="green" if entity_status == "working" else "dim")
-    content.append(f" - {msg_count} pending\n", style="dim")
-    content.append(f"Role: ", style="bold")
-    content.append(f"{entity_role}\n", style="white")  # Full role, no truncation
-    content.append("─" * 40 + "\n", style="dim")
-    
-    # Show pending queue
-    if messages:
-        content.append("📥 QUEUE: ", style="yellow bold")
-        for msg in messages[:2]:
-            from_agent = msg.get("from", "?")
-            content.append(f"←{from_agent} ", style="cyan")
-        content.append("\n")
-    
-    # Show history (compact)
+
+    # Message history
+    history = get_message_history(
+        state.session_id, entity_id, max_entries=50, working_dir=working_dir
+    )
+
+    # Build lines as individual Text objects for line-based scrolling
+    all_lines: list[Text] = []
+
+    # Header lines
+    header = Text()
+    status_style = "green" if entity_status == "working" else "dim"
+    header.append(f"{entity_name}", style="cyan bold")
+    header.append(f" [{entity_status}]", style=status_style)
+    if msg_count:
+        header.append(f"  {msg_count} pending", style="yellow")
+    all_lines.append(header)
+    all_lines.append(Text("─" * 44, style="dim"))
+
     if not history:
-        content.append("No message history\n", style="dim")
+        all_lines.append(Text("No messages yet", style="dim italic"))
     else:
-        for item in history[-8:]:
+        for item in history:
             time_str = item.get("time", "")
             msg_type = item.get("type", "")
-            preview = item.get("preview", "")[:60]
-            if len(item.get("preview", "")) > 60:
-                preview += "..."
-            
+            preview = item.get("preview", "")
+            from_agent = item.get("from", "?")
+            to_agent = item.get("to", "?")
+
+            direction_line = Text()
+            direction_line.append(f" {time_str} ", style="dim")
             if msg_type == "sent":
-                to_agent = item.get("to", "?")
-                content.append(f"{time_str} ", style="dim")
-                content.append(f"→{to_agent} ", style="green")
-                content.append(f"{preview}\n", style="white")
+                direction_line.append(f"{entity_id}→{to_agent}", style="green bold")
             else:
-                from_agent = item.get("from", "?")
-                content.append(f"{time_str} ", style="dim")
-                content.append(f"←{from_agent} ", style="blue")
-                content.append(f"{preview}\n", style="white")
-    
-    return Panel(content, title=f"[bold green]{entity_name}[/bold green]", border_style="green")
+                direction_line.append(f"{from_agent}→{entity_id}", style="blue bold")
+            all_lines.append(direction_line)
+            all_lines.append(Text(f"   {preview}", style="white"))
+            all_lines.append(Text(""))  # Breathing room
 
+    # Apply line-based scroll
+    visible_line_count = _compute_visible_lines("messages", state.expanded_view)
+    visible, eff_offset, total_lines, max_offset = _apply_line_scroll(
+        all_lines, state.msg_scroll_offset, visible_line_count
+    )
 
-def build_activity_log_panel(session_id: str, max_lines: int = 50, expanded: bool = False, working_dir: str | None = None) -> Panel:
-    """Build the activity log panel showing recent events."""
-    entries = read_activity_log(max_entries=max_lines, session_id=session_id, working_dir=working_dir)
-    
+    # Build final content
     content = Text()
+    for i, line in enumerate(visible):
+        content.append_text(line)
+        if i < len(visible) - 1:
+            content.append("\n")
+
+    # Scroll indicator
+    if max_offset > 0:
+        content.append("\n")
+        indicator = Text()
+        page = max(1, (total_lines - eff_offset) // visible_line_count)
+        total_pages = max(1, (total_lines + visible_line_count - 1) // visible_line_count)
+        indicator.append(f"  [{page}/{total_pages}] ", style="dim")
+        if eff_offset > 0:
+            indicator.append("↓newer ", style="dim")
+        if eff_offset < max_offset:
+            indicator.append("↑older", style="dim")
+        content.append_text(indicator)
+
+    focused = state.focused_panel == "messages"
+    border = "bright_white" if focused else "green dim"
+    title = f"[bold green]{entity_name}[/bold green]"
+    if focused:
+        title += "  [bright_white bold]< FOCUSED >[/bright_white bold]"
+    return Panel(content, title=title, border_style=border)
+
+
+def build_activity_log_panel(state: MonitorState) -> Panel:
+    """Build the activity log panel showing recent events.
     
-    if not entries:
-        content.append("No activity logged yet\n", style="dim")
-        content.append("Activity will appear as agents communicate", style="dim")
+    Improvements over original:
+    - De-duplicate MSG+RECV pairs (only show MSG)
+    - Dim noisy events (POLL, RECV)
+    - Add horizontal gap between bursts (>5s gap)
+    - Support scroll offset
+    """
+    session_id = state.session_id
+    expanded = state.expanded_view
+    working_dir = state.working_dir
+    entries = read_activity_log(max_entries=200, session_id=session_id, working_dir=working_dir)
+
+    # Filter: skip RECV events entirely (MSG already covers the info),
+    # dim polling events
+    filtered: list[dict] = []
+    for entry in entries:
+        event = entry.get("event", "unknown")
+        if event == "message_received":
+            continue  # redundant with message_sent
+        filtered.append(entry)
+
+    # Build lines as individual Text objects for line-based scrolling
+    all_lines: list[Text] = []
+
+    if not filtered:
+        all_lines.append(Text("No activity logged yet", style="dim"))
+        all_lines.append(Text("Activity will appear as agents communicate", style="dim"))
     else:
-        # Show entries
-        for entry in entries[-max_lines:]:
+        prev_ts = 0.0
+        for entry in filtered:
             time_str = entry.get("time_str", "??:??:??")
             event = entry.get("event", "unknown")
-            
-            # Format based on event type
+            ts = entry.get("timestamp", 0.0)
+
+            # Insert gap separator for >5s pauses
+            if prev_ts and ts - prev_ts > 5.0:
+                all_lines.append(Text("  ·  ·  ·", style="dim"))
+            prev_ts = ts
+
+            line = Text()
+            line.append(f"{time_str} ", style="dim")
+
             if event == "session_start":
-                content.append(f"{time_str} ", style="dim")
-                content.append("START ", style="green bold")
-                content.append("Session started\n", style="green")
+                line.append("START ", style="green bold")
+                line.append("Session started", style="green")
             elif event == "session_stop":
-                content.append(f"{time_str} ", style="dim")
-                content.append("STOP  ", style="red bold")
-                content.append("Session stopped\n", style="red")
+                line.append("STOP  ", style="red bold")
+                line.append("Session stopped", style="red")
             elif event == "agent_spawn":
                 agent_id = entry.get("agent_id", "?")
                 raw_role = entry.get("role", "")
                 role = raw_role if expanded else truncate_text(raw_role, 40)
-                content.append(f"{time_str} ", style="dim")
-                content.append("SPAWN ", style="cyan bold")
-                content.append(f"{agent_id}", style="cyan")
+                line.append("SPAWN ", style="cyan bold")
+                line.append(f"{agent_id}", style="cyan")
                 if role:
-                    content.append(f" ({role})", style="dim")
-                content.append("\n")
+                    line.append(f" ({role})", style="dim")
             elif event == "agent_terminate":
                 agent_id = entry.get("agent_id", "?")
-                content.append(f"{time_str} ", style="dim")
-                content.append("TERM  ", style="yellow bold")
-                content.append(f"{agent_id}\n", style="yellow")
+                line.append("TERM  ", style="yellow bold")
+                line.append(f"{agent_id}", style="yellow")
             elif event == "message_sent":
                 from_agent = entry.get("from", "?")
                 to_agent = entry.get("to", "?")
                 raw_preview = entry.get("message_preview", "")
-                # Collapse newlines but don't truncate - let panel wrap
                 preview = " ".join(raw_preview.split())
-                content.append(f"{time_str} ", style="dim")
-                content.append("MSG   ", style="magenta bold")
-                content.append(f"{from_agent}→{to_agent}", style="magenta")
+                if not expanded:
+                    preview = truncate_text(preview, 60)
+                line.append("MSG   ", style="magenta bold")
+                line.append(f"{from_agent}→{to_agent}", style="magenta")
                 if preview:
-                    content.append(f" {preview}", style="white")
-                content.append("\n")
-            elif event == "message_received":
-                agent_id = entry.get("agent_id", "?")
-                from_agent = entry.get("from", "?")
-                content.append(f"{time_str} ", style="dim")
-                content.append("RECV  ", style="blue bold")
-                content.append(f"{agent_id}←{from_agent}\n", style="blue")
+                    line.append(f" {preview}", style="white")
             elif event == "polling_start":
+                # Dim noise — only show in expanded mode
+                if not expanded:
+                    continue
                 agent_id = entry.get("agent_id", "?")
-                timeout = entry.get("timeout", "?")
-                content.append(f"{time_str} ", style="dim")
-                content.append("POLL  ", style="cyan bold")
-                content.append(f"{agent_id}", style="cyan")
-                content.append(f" waiting {timeout}s\n", style="dim")
+                line.append("POLL  ", style="dim")
+                line.append(f"{agent_id}", style="dim")
             elif event == "error":
                 raw_msg = entry.get("message", "unknown error")
                 msg = raw_msg if expanded else truncate_text(raw_msg, 60)
-                content.append(f"{time_str} ", style="dim")
-                content.append("ERROR ", style="red bold")
-                content.append(f"{msg}\n", style="red")
+                line.append("ERROR ", style="red bold")
+                line.append(f"{msg}", style="red")
             else:
-                content.append(f"{time_str} ", style="dim")
-                content.append(f"{event.upper():6}", style="white bold")
-                content.append("\n")
-    
-    title = "[bold magenta]Activity Log[/bold magenta]"
+                line.append(f"{event.upper():6}", style="white bold")
+
+            all_lines.append(line)
+
+    # Apply line-based scroll
+    visible_line_count = _compute_visible_lines("activity", expanded)
+    visible, eff_offset, total_lines, max_offset = _apply_line_scroll(
+        all_lines, state.activity_scroll_offset, visible_line_count
+    )
+
+    # Build final content
+    content = Text()
+    for i, line in enumerate(visible):
+        content.append_text(line)
+        if i < len(visible) - 1:
+            content.append("\n")
+
+    # Scroll indicator
+    if max_offset > 0:
+        content.append("\n")
+        indicator = Text()
+        page = max(1, (total_lines - eff_offset) // visible_line_count)
+        total_pages = max(1, (total_lines + visible_line_count - 1) // visible_line_count)
+        indicator.append(f"  [{page}/{total_pages}] ", style="dim")
+        if eff_offset > 0:
+            indicator.append("↓newer ", style="dim")
+        if eff_offset < max_offset:
+            indicator.append("↑older", style="dim")
+        content.append_text(indicator)
+
+    focused = state.focused_panel == "activity"
+    border = "bright_white" if focused else "magenta dim"
+    title = f"[bold magenta]Activity Log ({len(filtered)})[/bold magenta]"
+    if focused:
+        title += "  [bright_white bold]< FOCUSED >[/bright_white bold]"
     if expanded:
         title += " [EXPANDED]"
-    return Panel(content, title=title, border_style="magenta")
+    return Panel(content, title=title, border_style=border)
 
 
 def build_health_panel(storage: Any, state: MonitorState) -> Panel:
@@ -825,7 +974,48 @@ def build_health_panel(storage: Any, state: MonitorState) -> Panel:
     return Panel(content, title="[bold]Health[/bold]", border_style="cyan")
 
 
-def build_dashboard(storage: Any, state: MonitorState, start_time: float) -> Layout:
+def build_help_panel() -> Panel:
+    """Build full-screen help overlay."""
+    content = Text()
+    content.append("Keyboard Shortcuts\n", style="bold underline")
+    content.append("─" * 40 + "\n\n", style="dim")
+
+    shortcuts = [
+        ("↑ / ↓  or  j / k", "Navigate between agents"),
+        ("Tab", "Switch focus between Messages / Activity panels"),
+        ("[ / ]  or  PgUp / PgDn", "Scroll focused panel up / down"),
+        ("e", "Toggle expanded view (full messages, show polling)"),
+        ("p  or  Enter", "View selected agent's tmux pane output"),
+        ("m", "Send message to selected agent"),
+        ("t", "Terminate all workers"),
+        ("i", "Interrupt all — request immediate reports"),
+        ("r", "Force refresh"),
+        ("?", "Toggle this help overlay"),
+        ("q  or  Ctrl+C", "Quit monitor"),
+    ]
+
+    for key, desc in shortcuts:
+        content.append(f"  {key:24s}", style="cyan bold")
+        content.append(f"  {desc}\n", style="white")
+
+    content.append("\n")
+    content.append("Press any key to close this help\n", style="dim italic")
+    return Panel(content, title="[bold yellow]Help[/bold yellow]", border_style="yellow")
+
+
+def build_pane_viewer_panel(state: MonitorState) -> Panel:
+    """Build full-screen pane content viewer overlay."""
+    content = Text()
+    content.append(state.pane_viewer_content or "No pane content available", style="white")
+    content.append("\n\nPress ESC or q to close", style="dim italic")
+    return Panel(
+        content,
+        title=f"[bold cyan]{state.pane_viewer_title}[/bold cyan]",
+        border_style="cyan",
+    )
+
+
+def build_dashboard(storage: Any, state: MonitorState, start_time: float) -> Layout | Panel:
     """Build the complete dashboard layout.
     
     Layout:
@@ -836,7 +1026,17 @@ def build_dashboard(storage: Any, state: MonitorState, start_time: float) -> Lay
     │  Activity Logs   │         Messages            │
     │                  │                             │
     └──────────────────┴─────────────────────────────┘
+    
+    Overlays (full-screen):
+    - Help (?)
+    - Pane viewer (p/Enter)
     """
+    # Full-screen overlays take priority
+    if state.help_overlay_active:
+        return build_help_panel()
+    if state.pane_viewer_active:
+        return build_pane_viewer_panel(state)
+
     session = storage.get_session(state.session_id)
     if not session:
         return Layout(Panel("[red]Session not found[/red]", title="Error"))
@@ -866,13 +1066,13 @@ def build_dashboard(storage: Any, state: MonitorState, start_time: float) -> Lay
     layout["top"]["agents"].update(entities_panel)
     layout["top"]["health"].update(build_health_panel(storage, state))
     
-    # Bottom row: Activity Logs (left) | Messages (right)
+    # Bottom row: Activity Logs (left, smaller) | Messages (right, bigger)
     layout["bottom"].split_row(
-        Layout(name="activity", ratio=1),
-        Layout(name="messages", ratio=1),
+        Layout(name="activity", ratio=2),
+        Layout(name="messages", ratio=3),
     )
     
-    layout["bottom"]["activity"].update(build_activity_log_panel(state.session_id, max_lines=25 if not state.expanded_view else 40, expanded=state.expanded_view, working_dir=state.working_dir))
+    layout["bottom"]["activity"].update(build_activity_log_panel(state))
     layout["bottom"]["messages"].update(build_messages_panel(storage, state))
     
     return layout
@@ -1000,19 +1200,86 @@ def run_monitor(refresh_rate: float = 1.0) -> None:
                             continue
                         
                         # Normal mode key handling
+                        
+                        # Overlay dismissals first
+                        if state.help_overlay_active:
+                            state.help_overlay_active = False
+                            needs_render = True
+                            continue
+                        if state.pane_viewer_active:
+                            if key in ('q', 'Q', 'ESC', '\x1b'):
+                                state.pane_viewer_active = False
+                                needs_render = True
+                            continue
+                        
                         if key in ('q', 'Q', '\x03'):  # q or Ctrl+C
                             state.running = False
                             continue
+                        elif key == '?':
+                            state.help_overlay_active = True
+                            needs_render = True
                         elif key in ('UP', 'k'):
                             new_index = max(0, state.selected_index - 1)
                             if new_index != state.selected_index:
                                 state.selected_index = new_index
+                                state.msg_scroll_offset = 0  # Reset scroll on agent change
                                 needs_render = True
                         elif key in ('DOWN', 'j'):
                             new_index = min(max_index, state.selected_index + 1)
                             if new_index != state.selected_index:
                                 state.selected_index = new_index
+                                state.msg_scroll_offset = 0
                                 needs_render = True
+                        elif key == '\t':  # Tab — switch focused panel
+                            state.focused_panel = "activity" if state.focused_panel == "messages" else "messages"
+                            needs_render = True
+                        elif key in ('[', 'PGUP'):  # Scroll up (older)
+                            if state.focused_panel == "messages":
+                                state.msg_scroll_offset += 5
+                            else:
+                                state.activity_scroll_offset += 5
+                            needs_render = True
+                        elif key in (']', 'PGDN'):  # Scroll down (newer)
+                            if state.focused_panel == "messages":
+                                state.msg_scroll_offset = max(0, state.msg_scroll_offset - 5)
+                            else:
+                                state.activity_scroll_offset = max(0, state.activity_scroll_offset - 5)
+                            needs_render = True
+                        elif key == 'HOME':
+                            # Scroll to oldest
+                            if state.focused_panel == "messages":
+                                state.msg_scroll_offset = 9999
+                            else:
+                                state.activity_scroll_offset = 9999
+                            needs_render = True
+                        elif key == 'END':
+                            # Scroll to newest
+                            if state.focused_panel == "messages":
+                                state.msg_scroll_offset = 0
+                            else:
+                                state.activity_scroll_offset = 0
+                            needs_render = True
+                        elif key in ('p', 'P', '\r', '\n'):  # View pane output
+                            if state.selected_index > 0:
+                                sorted_agents = sorted(agents, key=lambda a: a.id)
+                                agent_index = state.selected_index - 1
+                                if agent_index < len(sorted_agents):
+                                    target_agent = sorted_agents[agent_index]
+                                    pane_content = _capture_pane_content(target_agent.pane_id)
+                                    state.pane_viewer_content = pane_content
+                                    state.pane_viewer_title = f"Pane: Agent {target_agent.id} ({target_agent.pane_id})"
+                                    state.pane_viewer_active = True
+                                    needs_render = True
+                            else:
+                                state.status_message = "Orchestrator has no pane"
+                                state.status_time = time.time()
+                                needs_render = True
+                        elif key in ('r', 'R'):
+                            # Force refresh
+                            last_data_update = 0
+                            state.status_message = "✓ Refreshed"
+                            state.status_time = time.time()
+                            needs_render = True
                         elif key in ('e', 'E'):
                             state.expanded_view = not state.expanded_view
                             needs_render = True

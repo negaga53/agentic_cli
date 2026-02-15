@@ -10,9 +10,13 @@ from pathlib import Path
 from typing import Any
 
 import libtmux
+from libtmux.constants import PaneDirection
 from libtmux.exc import LibTmuxException
 
 from agentic.models import Agent
+
+# Maximum number of side-by-side columns before splitting rows
+MAX_WORKER_COLUMNS = 3
 
 
 # AGENTS.md content - loaded into system context by Copilot CLI
@@ -136,6 +140,8 @@ class TmuxManager:
     def __init__(self, session_name: str = "agentic", use_current_session: bool = True):
         self.server = libtmux.Server()
         self._session: libtmux.Session | None = None
+        # Track bottom-most pane ID in each column for grid layout
+        self._worker_column_tips: list[str] = []
         
         # If inside tmux and use_current_session is enabled, use the current session
         if use_current_session and self._is_inside_tmux():
@@ -220,12 +226,20 @@ class TmuxManager:
             window = self.session.new_window(window_name="admin")
         
         pane = window.active_pane
+        
+        # Wait for shell to be ready
+        time.sleep(0.3)
+        
+        # Set environment variables (mirrors worker pane setup)
+        pane.send_keys(f'export AGENTIC_WORKING_DIR="{working_dir}"', enter=True)
+        time.sleep(0.1)
+        
         if working_dir != ".":
             pane.send_keys(f"cd {working_dir}", enter=True)
+            time.sleep(0.2)
         
         # Launch the monitoring dashboard
-        time.sleep(0.3)  # Wait for cd to complete
-        pane.send_keys("agentic monitor", enter=True)
+        pane.send_keys("agentic-tmux monitor", enter=True)
         
         return pane.id
 
@@ -287,9 +301,28 @@ class TmuxManager:
             worker_window = self.session.new_window(window_name="workers")
             # The new window creates a pane, use it for the first worker
             pane = worker_window.active_pane
+            self._worker_column_tips = [pane.id]
         else:
-            # Split the window to create a new pane
-            pane = worker_window.split()
+            # Reconstruct column state if not tracked
+            if not self._worker_column_tips:
+                self._worker_column_tips = self._reconstruct_column_tips(worker_window)
+            
+            num_columns = len(self._worker_column_tips)
+            existing_panes = list(worker_window.panes)
+            n = len(existing_panes)
+            
+            if num_columns < MAX_WORKER_COLUMNS:
+                # Phase 1: Add columns (split rightmost tip to the right)
+                target = self._get_pane_by_id(self._worker_column_tips[-1])
+                pane = target.split(direction=PaneDirection.Right)
+                self._worker_column_tips.append(pane.id)
+            else:
+                # Phase 2: Round-robin split columns below
+                col_idx = (n - MAX_WORKER_COLUMNS) % MAX_WORKER_COLUMNS
+                target = self._get_pane_by_id(self._worker_column_tips[col_idx])
+                pane = target.split(direction=PaneDirection.Below)
+                # Update tip to the new bottom pane
+                self._worker_column_tips[col_idx] = pane.id
         
         # Wait for shell to be ready
         time.sleep(0.3)
@@ -445,13 +478,41 @@ class TmuxManager:
             pane_mapping[agent.id] = pane_id
             agent.pane_id = pane_id
         
-        # Apply layout
-        self._apply_layout(layout)
+        # Only apply layout if explicitly requested (grid layout is managed
+        # by spawn_worker_pane's column/row splitting logic)
+        if layout != "tiled":
+            self._apply_layout(layout)
         
         return pane_mapping
 
-    def _apply_layout(self, layout: str = "tiled") -> None:
+    def _reconstruct_column_tips(self, worker_window: libtmux.Window) -> list[str]:
+        """Reconstruct column tip pane IDs from existing window layout.
+        
+        Groups panes by their left x-position to identify columns,
+        then picks the bottom-most pane in each column as the tip.
+        """
+        panes = list(worker_window.panes)
+        if not panes:
+            return []
+        
+        # Group panes by x-position (column)
+        columns: dict[int, list[libtmux.Pane]] = {}
+        for pane in panes:
+            left = int(pane.pane_left)
+            columns.setdefault(left, []).append(pane)
+        
+        # Sort by x-position (left to right) and pick bottom-most pane per column
+        tips = []
+        for col_x in sorted(columns):
+            bottom = max(columns[col_x], key=lambda p: int(p.pane_top))
+            tips.append(bottom.id)
+        
+        return tips
+
+    def _apply_layout(self, layout: str | None = "tiled") -> None:
         """Apply a layout to the workers window."""
+        if layout is None:
+            return
         for window in self.session.windows:
             if window.name == "workers":
                 try:

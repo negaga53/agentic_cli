@@ -1,8 +1,8 @@
 """CLI interface for agentic-tmux.
 
 The CLI provides debugging and monitoring commands. For planning and execution,
-use the MCP server via `agentic mcp` which integrates with VS Code, Claude Desktop,
-and other MCP clients.
+use the MCP server via `agentic-tmux mcp` which integrates with GitHub Copilot CLI,
+Claude Code, and other MCP clients.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ console = Console()
 def main():
     """Agentic TMUX - Multi-agent orchestration for CLI coding assistants.
     
-    Primary interface is the MCP server. Start it with: agentic mcp
+    Primary interface is the MCP server. Start it with: agentic-tmux mcp
     
     These CLI commands are for debugging and monitoring.
     """
@@ -133,7 +133,9 @@ def render_status(session_id: str, storage: Any) -> Panel:
     else:
         progress_str = "No tasks"
     
-    content = f"{agent_table}\n\n[bold]Progress:[/bold] {progress_str}"
+    from rich.console import Group
+    from rich.text import Text
+    content = Group(agent_table, Text(), Text(f"Progress: {progress_str}"))
     
     return Panel(
         content,
@@ -497,8 +499,7 @@ def worker_mcp_cmd(transport: str):
 @main.command()
 @click.option("--cli", "-c", type=click.Choice(["copilot", "claude", "both"]), help="Which CLI to configure")
 @click.option("--hooks", is_flag=True, help="Install debug hooks for Copilot CLI")
-@click.option("--project", "-p", is_flag=True, help="Setup for current project only")
-def setup(cli: str | None, hooks: bool, project: bool):
+def setup(cli: str | None, hooks: bool):
     """Interactive setup wizard for agentic-tmux.
     
     Configures MCP integration for GitHub Copilot CLI and/or Claude Code.
@@ -571,82 +572,53 @@ def setup(cli: str | None, hooks: bool, project: bool):
     # Setup MCP configuration
     console.print("\n[bold]Configuring MCP integration...[/bold]\n")
     
-    if project:
-        # Project-specific setup
-        project_dir = Path.cwd()
-        vscode_dir = project_dir / ".vscode"
-        vscode_dir.mkdir(exist_ok=True)
+    if cli in ("copilot", "both"):
+        # Copilot CLI global MCP config
+        copilot_config_dir = Path.home() / ".copilot"
+        copilot_config_dir.mkdir(parents=True, exist_ok=True)
+        copilot_config_path = copilot_config_dir / "mcp-config.json"
         
-        mcp_config = {
-            "servers": {
-                "agentic": {
-                    "command": "agentic-mcp",
-                    "args": [],
-                }
-            }
+        copilot_config: dict = {}
+        if copilot_config_path.exists():
+            try:
+                with open(copilot_config_path) as f:
+                    copilot_config = json.load(f)
+            except json.JSONDecodeError:
+                pass
+        
+        copilot_config.setdefault("mcpServers", {})["agentic"] = {
+            "type": "local",
+            "tools": ["*"],
+            "command": "agentic-tmux",
+            "args": ["mcp"],
         }
         
-        mcp_file = vscode_dir / "mcp.json"
-        if mcp_file.exists():
-            console.print(f"  [yellow]![/yellow] {mcp_file} already exists, backing up...")
-            shutil.copy(mcp_file, f"{mcp_file}.bak")
+        with open(copilot_config_path, "w") as f:
+            json.dump(copilot_config, f, indent=2)
         
-        with open(mcp_file, "w") as f:
-            json.dump(mcp_config, f, indent=2)
+        console.print(f"  [green]✓[/green] Copilot CLI: {copilot_config_path}")
+    
+    if cli in ("claude", "both"):
+        # Claude Code reads MCP config from ~/.claude.json (global) or .mcp.json (project)
+        claude_config_path = Path.home() / ".claude.json"
         
-        console.print(f"  [green]✓[/green] Created {mcp_file}")
+        claude_config: dict = {}
+        if claude_config_path.exists():
+            try:
+                with open(claude_config_path) as f:
+                    claude_config = json.load(f)
+            except json.JSONDecodeError:
+                pass
         
-    else:
-        # Global setup
-        if cli in ("copilot", "both"):
-            # VS Code global MCP config
-            vscode_mcp_dir = Path.home() / ".vscode" / "mcp"
-            vscode_mcp_dir.mkdir(parents=True, exist_ok=True)
-            
-            mcp_file = vscode_mcp_dir / "servers.json"
-            
-            mcp_config = {"servers": {}}
-            if mcp_file.exists():
-                try:
-                    with open(mcp_file) as f:
-                        mcp_config = json.load(f)
-                except json.JSONDecodeError:
-                    pass
-            
-            mcp_config.setdefault("servers", {})["agentic"] = {
-                "command": "agentic-mcp",
-                "args": [],
-            }
-            
-            with open(mcp_file, "w") as f:
-                json.dump(mcp_config, f, indent=2)
-            
-            console.print(f"  [green]✓[/green] VS Code MCP: {mcp_file}")
+        claude_config.setdefault("mcpServers", {})["agentic"] = {
+            "command": "agentic-tmux",
+            "args": ["mcp"],
+        }
         
-        if cli in ("claude", "both"):
-            # Claude Desktop config
-            claude_config_dir = Path.home() / ".config" / "claude"
-            claude_config_dir.mkdir(parents=True, exist_ok=True)
-            
-            claude_file = claude_config_dir / "claude_desktop_config.json"
-            
-            claude_config = {"mcpServers": {}}
-            if claude_file.exists():
-                try:
-                    with open(claude_file) as f:
-                        claude_config = json.load(f)
-                except json.JSONDecodeError:
-                    pass
-            
-            claude_config.setdefault("mcpServers", {})["agentic"] = {
-                "command": "agentic-mcp",
-                "args": [],
-            }
-            
-            with open(claude_file, "w") as f:
-                json.dump(claude_config, f, indent=2)
-            
-            console.print(f"  [green]✓[/green] Claude Desktop: {claude_file}")
+        with open(claude_config_path, "w") as f:
+            json.dump(claude_config, f, indent=2)
+        
+        console.print(f"  [green]✓[/green] Claude Code: {claude_config_path}")
     
     # Install debug hooks
     if hooks or (not hooks and Confirm.ask("\nInstall debug hooks for Copilot CLI?", default=False)):
@@ -668,9 +640,9 @@ def setup(cli: str | None, hooks: bool, project: bool):
         "[bold green]Setup Complete![/bold green]\n\n"
         "[cyan]Quick Start:[/cyan]\n"
         "1. Start tmux: [yellow]tmux new -s work[/yellow]\n"
-        "2. Open VS Code/Claude in your project\n"
-        "3. Use MCP tool: [yellow]plan_tasks(\"your task here\")[/yellow]\n\n"
-        "Or monitor from CLI: [yellow]agentic status --watch[/yellow]",
+        "2. Open Copilot CLI/Claude Code in your project\n"
+        "3. Ask your AI to use [yellow]agentic[/yellow] MCP tools\n\n"
+        "And monitor from CLI: [yellow]agentic-tmux monitor[/yellow]",
         border_style="green",
     ))
 
@@ -725,7 +697,7 @@ def doctor():
     
     # Check agentic commands
     console.print("\n[cyan]Agentic Commands:[/cyan]")
-    for cmd in ["agentic", "agentic-mcp", "agentic-worker-mcp"]:
+    for cmd in ["agentic-tmux", "agentic-worker-mcp"]:
         if shutil.which(cmd):
             console.print(f"  [green]✓[/green] {cmd}")
         else:
@@ -767,24 +739,26 @@ def doctor():
     # Check MCP configuration
     console.print("\n[cyan]MCP Configuration:[/cyan]")
     
-    vscode_mcp = Path.home() / ".vscode" / "mcp" / "servers.json"
-    if vscode_mcp.exists():
-        console.print(f"  [green]✓[/green] VS Code: {vscode_mcp}")
+    # Copilot CLI: reads from ~/.copilot/mcp-config.json
+    copilot_mcp = Path.home() / ".copilot" / "mcp-config.json"
+    if copilot_mcp.exists():
+        console.print(f"  [green]✓[/green] Copilot CLI: {copilot_mcp}")
     else:
-        console.print("  [dim]○[/dim] VS Code MCP not configured")
+        console.print("  [dim]○[/dim] Copilot CLI: ~/.copilot/mcp-config.json not configured (run agentic-tmux setup)")
     
-    claude_config = Path.home() / ".config" / "claude" / "claude_desktop_config.json"
+    # Claude Code: reads from ~/.claude.json (global) or .mcp.json (project)
+    claude_config = Path.home() / ".claude.json"
     if claude_config.exists():
-        console.print(f"  [green]✓[/green] Claude Desktop: {claude_config}")
+        console.print(f"  [green]✓[/green] Claude Code: {claude_config}")
     else:
-        console.print("  [dim]○[/dim] Claude Desktop not configured")
+        console.print("  [dim]○[/dim] Claude Code: ~/.claude.json not configured (run agentic-tmux setup)")
     
     # Summary
     console.print()
     if all_ok:
         console.print("[green]All critical checks passed![/green]")
     else:
-        console.print("[yellow]Some issues found. Run 'agentic setup' to fix.[/yellow]")
+        console.print("[yellow]Some issues found. Run 'agentic-tmux setup' to fix.[/yellow]")
 
 
 if __name__ == "__main__":
