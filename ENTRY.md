@@ -25,7 +25,7 @@ You: "Spawn 2 agents: a coder and a reviewer.
 └─────────┬───────────────────┬───────────┘
           ▼                   ▼
    ┌─────────────┐    ┌─────────────┐
-   │  Pane: Coder   │◄──►│  Pane: Expert   │
+   │  Pane: W1   │◄──►│  Pane: W2   |
    │  Coder      │    │  Reviewer   │
    │  copilot -i │    │  copilot -i │
    └─────────────┘    └─────────────┘
@@ -80,8 +80,6 @@ A coder agent builds an HTML/JS snake game from scratch. A reviewer agent inspec
 > *— Coder updates —*
 >
 > **Expert → Coder:** Re-review complete. Visually polished, smooth animations, excellent UX. **No further improvements required. Approved.**
-
-Two agents, one review cycle. The coder and reviewer talked directly — no orchestrator relaying messages between them.
 
 **The final game:**
 

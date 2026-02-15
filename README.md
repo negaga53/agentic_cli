@@ -195,23 +195,23 @@ A coder agent builds an HTML snake game while a reviewer provides feedback. They
 
 ![Snake implementation](demos/snake_impl.gif)
 
-**Agent conversation (from real activity log):**
+**What actually happened:**
 
-> **W2 → W1:** Here are the review criteria: modern visuals with smooth animations, responsive controls, smooth interpolated movement, cross-device support, and well-commented single-file code.
+> **Expert → Coder:** Here are the review criteria: modern visuals with smooth animations, responsive controls, smooth interpolated movement, cross-device support, and well-commented single-file code.
 >
-> **W1 → W2:** Confirmed. Beginning implementation.
+> **Coder → Expert:** Confirmed. Beginning implementation.
 >
-> *— W1 codes —*
+> *— Coder codes —*
 >
-> **W1 → W2:** Initial implementation submitted. Ready for review.
+> **Coder → Expert:** Initial implementation submitted. Ready for review.
 >
-> **W2 → W1:** Adding subtle food/snake animations and board grid. Pause button needs visual state indicator. Snake movement should be interpolated, not grid-jumping. Reduce shadow blur on mobile. Add minimum playable area with dynamic scaling. Group code with section headers.
+> **Expert → Coder:** Six items to fix — add food/snake animations and board grid, pause button visual state, interpolated movement instead of grid-jumping, reduce shadow blur on mobile, add minimum playable area with dynamic scaling, group code with section headers.
 >
-> **W1 → W2:** All 6 items acknowledged. Updating now.
+> **Coder → Expert:** All 6 items acknowledged. Updating now.
 >
-> *— W1 updates —*
+> *— Coder updates —*
 >
-> **W2 → W1:** Re-review complete. Visually polished, smooth animations, excellent UX. **No further improvements required. Approved.**
+> **Expert → Coder:** Re-review complete. Visually polished, smooth animations, excellent UX. **No further improvements required. Approved.**
 
 **Final result:**
 
