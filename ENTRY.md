@@ -2,14 +2,14 @@
 
 ## What I Built
 
-**Agentic TMUX** — a multi-agent orchestration system for GitHub Copilot CLI that runs multiple AI agents in parallel tmux panes.
+**Agentic TMUX MCP** — a multi-agent orchestration system for GitHub Copilot CLI that runs multiple AI agents in parallel tmux panes.
 
 The idea is simple: instead of one AI doing everything sequentially, you describe the work and agents split it up. Each agent runs in its own tmux pane, so you can literally watch them think, code, and talk to each other in real-time.
 
 What makes this different from other multi-agent setups:
 
 - **One prompt is all it takes.** You tell Copilot CLI what you want done. It spawns the agents, assigns tasks, collects results. You just watch.
-- **Agents talk directly to each other.** No round-tripping through a coordinator. Agent W1 can message W2 directly via message queues. This keeps context windows small and eliminates the "middle man" bottleneck where a coordinator has to relay everything.
+- **Agents talk directly to each other.** No round-tripping through a coordinator. Agent Coder can message Expert directly via message queues. This keeps context windows small and eliminates the "middle man" bottleneck where a coordinator has to relay everything.
 - **Full transparency.** Every agent runs in a visible tmux pane. You see exactly what each agent is doing — their thought process, tool calls, file edits, everything. No black box.
 
 ### How It Works
@@ -25,7 +25,7 @@ You: "Spawn 2 agents: a coder and a reviewer.
 └─────────┬───────────────────┬───────────┘
           ▼                   ▼
    ┌─────────────┐    ┌─────────────┐
-   │  Pane: W1   │◄──►│  Pane: W2   │
+   │  Pane: Coder   │◄──►│  Pane: Expert   │
    │  Coder      │    │  Reviewer   │
    │  copilot -i │    │  copilot -i │
    └─────────────┘    └─────────────┘
@@ -50,9 +50,7 @@ Two agents play a number-guessing game. One picks a secret number between 1–10
 ![Guess the Number demo](demos/guess_number.gif)
 
 **The prompt:**
-> Spawn 2 agents. Agent 1 picks a secret number between 1 and 100. Agent 2 guesses it. They exchange messages with higher/lower hints until the number is found.
-
-This demo shows direct agent-to-agent messaging in action — no orchestrator in the loop during the guessing rounds.
+> Use agentic to play of game of guess the number [1-100] between 2 players
 
 ---
 
@@ -63,31 +61,33 @@ A coder agent builds an HTML/JS snake game from scratch. A reviewer agent inspec
 ![Snake implementation](demos/snake_impl.gif)
 
 **The prompt:**
-> Spawn 2 agents. Agent 1 is a frontend developer who builds an HTML/JS snake game. Agent 2 is an expert code reviewer who reviews each iteration and suggests improvements. They go back and forth until the reviewer approves.
+> Use agentic to spawn 2 agents. Agent 1 is a frontend developer who builds an HTML/JS snake game. Agent 2 is an expert code reviewer who reviews each iteration and suggests improvements. They go back and forth until the reviewer approves.
 
-**What actually happened (from the activity log):**
+**What actually happened:**
 
-> **W2 → W1:** Here are the review criteria: modern visuals with smooth animations, responsive controls, smooth interpolated movement, cross-device support, and well-commented single-file code.
+> **Expert → Coder:** Here are the review criteria: modern visuals with smooth animations, responsive controls, smooth interpolated movement, cross-device support, and well-commented single-file code.
 >
-> **W1 → W2:** Confirmed. Beginning implementation.
+> **Coder → Expert:** Confirmed. Beginning implementation.
 >
-> *— W1 codes —*
+> *— Coder codes —*
 >
-> **W1 → W2:** Initial implementation submitted. Ready for review.
+> **Coder → Expert:** Initial implementation submitted. Ready for review.
 >
-> **W2 → W1:** Six items to fix — add food/snake animations and board grid, pause button visual state, interpolated movement instead of grid-jumping, reduce shadow blur on mobile, add minimum playable area with dynamic scaling, group code with section headers.
+> **Expert → Coder:** Six items to fix — add food/snake animations and board grid, pause button visual state, interpolated movement instead of grid-jumping, reduce shadow blur on mobile, add minimum playable area with dynamic scaling, group code with section headers.
 >
-> **W1 → W2:** All 6 items acknowledged. Updating now.
+> **Coder → Expert:** All 6 items acknowledged. Updating now.
 >
-> *— W1 updates —*
+> *— Coder updates —*
 >
-> **W2 → W1:** Re-review complete. Visually polished, smooth animations, excellent UX. **No further improvements required. Approved.**
+> **Expert → Coder:** Re-review complete. Visually polished, smooth animations, excellent UX. **No further improvements required. Approved.**
 
 Two agents, one review cycle. The coder and reviewer talked directly — no orchestrator relaying messages between them.
 
 **The final game:**
 
 ![Snake game output](demos/snake_demo.gif)
+
+Note that this was made with GPT-4.1 (free model!)
 
 ---
 
@@ -100,5 +100,3 @@ Building Agentic TMUX was a case of using Copilot CLI to build a tool *for* Copi
 Copilot CLI was the primary development tool throughout. It helped scaffold the MCP server, implement the SQLite storage layer, build the Rich-based monitoring dashboard, and debug the tricky parts of tmux pane management (getting environment variables to propagate correctly through shell commands sent to panes was surprisingly finicky).
 
 The most interesting part was discovering how well Copilot CLI works as an *agent* in multi-agent scenarios. When given clear instructions via the `AGENTS.md` protocol file and MCP tools for messaging, it reliably follows the discover → execute → report → poll workflow. The agents don't need hand-holding — they call `list_agents()`, do their work, send results, and wait for further instructions.
-
-One insight: keeping agent prompts focused on *what* to do (not *how* to communicate) produces better results. The communication protocol is baked into the `AGENTS.md` file that Copilot CLI loads automatically, so the spawn prompt can focus entirely on the task. This separation of concerns — task prompt vs. protocol instructions — was key to making the system reliable.

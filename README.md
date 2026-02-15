@@ -1,4 +1,4 @@
-# Agentic TMUX
+# Agentic TMUX MCP
 
 ![Agentic TMUX banner](title.jpg)
 
@@ -120,30 +120,13 @@ copilot -i   # or: claude
 ```
 
 **Example prompt:**
-> Spawn 2 agents: one to refactor src/auth.py, another to write tests for it. Wait for both to finish and show me the results.
+> Use agentic to play of game of guess the number [1-100] between 2 players.
 
 **Monitor from another terminal:**
 ```bash
 agentic-tmux monitor     # Interactive dashboard
 agentic-tmux status -w   # Simple status view
 ```
-
----
-
-## MCP Tools
-
-Your AI gets these tools when MCP is configured:
-
-| Tool | Purpose |
-|------|---------|
-| `start_session()` | Create a new multi-agent session |
-| `spawn_agent(role="...")` | Spawn an agent with a task description |
-| `receive_message_from_agents()` | Wait for agent results |
-| `terminate_all_agents()` | Signal agents to exit |
-| `stop_session()` | End the session |
-| `send_message(agent_id, msg)` | Send follow-up instructions |
-| `get_status()` | Check all agents |
-| `read_pane_output(agent_id)` | Debug: read agent's terminal |
 
 ---
 
@@ -192,7 +175,7 @@ Without Redis, storage is `.agentic/agentic.db` in your project directory — au
 | `agentic-tmux: not found` | Add `$HOME/.local/bin` to `PATH` |
 | Agents not spawning | Make sure you're inside tmux: `tmux new -s work` |
 | MCP tools not appearing | Restart your CLI after adding MCP config |
-| Agents not communicating | Run `agentic-tmux doctor` to check storage |
+| Agents not communicating | Run `agentic-tmux doctor` to check health |
 
 ---
 
@@ -233,6 +216,8 @@ A coder agent builds an HTML snake game while a reviewer provides feedback. They
 **Final result:**
 
 ![Snake game demo](demos/snake_demo.gif)
+
+Note that this was made with GPT-4.1 (free model!)
 
 ---
 
